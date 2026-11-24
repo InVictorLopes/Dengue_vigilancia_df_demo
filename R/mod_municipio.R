@@ -331,6 +331,14 @@ mod_municipio_ui <- function(id) {
       label = "Mais filtros",
       icon = shiny::icon("filter"),
       class = "pv-janela-botao"
+    ),
+    # abre a janela de download (indicador, periodo, unidade e formato)
+    shiny::actionButton(
+      ns("abrir_download"),
+      label = "Baixar dados",
+      icon = shiny::icon("download"),
+      title = "Baixar tabela dos indicadores (CSV ou Excel)",
+      class = "pv-janela-botao"
     )
   )
 
@@ -1316,6 +1324,9 @@ mod_municipio_server <- function(id, chosen_municipio, cache_trigger = shiny::re
           baseGroups = c("Ruas", "Satélite"),
           options = leaflet::layersControlOptions(collapsed = FALSE),
           overlayGroups = c("Casos", "Indicador territorial", "Unidades de saúde (CNES)")
+        ) |>
+        # unidades de saude so' a partir do 1o zoom depois da vista inicial (10)
+        leaflet::groupOptions("Unidades de saúde (CNES)", zoomLevels = 11:22
         )
     })
 
@@ -1538,6 +1549,113 @@ mod_municipio_server <- function(id, chosen_municipio, cache_trigger = shiny::re
         DT::formatRound("escore", digits = 4, mark = ".", dec.mark = ",")
     }, server = TRUE)
 
+    ## Download dos dados (CSV / XLSX) ----
+    # Janela com indicador, periodo, unidade territorial e formato; a tabela
+    # sai de tabela_download() (R/fct_download.R), uma linha por RA/setor.
+
+    shiny::observeEvent(input$abrir_download, {
+      p <- periodo()
+      ind_atual <- input$indicador_bairro
+      sel <- if (isTRUE(ind_atual %in% INDICADORES_ESTRATIFICACAO)) "estrat" else ind_atual
+      filtros_txt <- gsub("<[^>]+>", "", texto_filtros())
+
+      shiny::showModal(shiny::modalDialog(
+        title = htmltools::tagList(shiny::icon("download"), " Baixar dados"),
+        size = "m",
+        easyClose = TRUE,
+        shiny::selectInput(
+          ns("dl_indicador"), "Indicador",
+          choices = INDICADORES_DOWNLOAD, selected = sel, width = "100%"
+        ),
+        shiny::conditionalPanel(
+          "input.dl_indicador != 'estrat'", ns = ns,
+          shiny::dateRangeInput(
+            ns("dl_periodo"), "Período (data dos primeiros sintomas)",
+            start = p[1], end = p[2],
+            min = lubridate::ymd("1939-01-01"),
+            max = dados()$meta$dt_max_notificacao,
+            format = "dd/mm/yyyy", startview = "month", language = "pt-BR",
+            separator = "até", width = "100%"
+          ),
+          shinyWidgets::prettyCheckbox(
+            ns("dl_aplicar_filtros"),
+            label = "Aplicar os filtros ativos do painel",
+            value = TRUE, status = "info", icon = shiny::icon("check")
+          ),
+          htmltools::p(
+            style = "font-size: 13px; color: #5B6B75; margin-top: -6px;",
+            if (nzchar(filtros_txt)) filtros_txt else "Nenhum filtro ativo além do período."
+          )
+        ),
+        shiny::conditionalPanel(
+          "input.dl_indicador == 'estrat'", ns = ns,
+          htmltools::p(
+            style = "font-size: 13px; color: #5B6B75;",
+            "A estratificação de risco usa toda a série histórica e não depende do período nem dos filtros."
+          )
+        ),
+        shinyWidgets::radioGroupButtons(
+          ns("dl_unidade"), "Unidade territorial",
+          choices = c("Região Administrativa" = "ra", "Setor censitário" = "setor"),
+          selected = unidade(), justified = TRUE, status = "primary", size = "sm"
+        ),
+        shinyWidgets::radioGroupButtons(
+          ns("dl_formato"), "Formato",
+          choices = c("Excel (.xlsx)" = "xlsx", "CSV (.csv)" = "csv"),
+          selected = "xlsx", justified = TRUE, status = "primary", size = "sm"
+        ),
+        footer = htmltools::tagList(
+          shiny::modalButton("Cancelar"),
+          shiny::downloadButton(ns("dl_baixar"), "Baixar", class = "btn-success")
+        )
+      ))
+    })
+
+    # periodo escolhido na janela (em ordem, mesmo se digitado invertido)
+    dl_periodo <- function() {
+      p <- as.Date(input$dl_periodo)
+      if (length(p) != 2 || anyNA(p)) p <- periodo()
+      sort(p)
+    }
+
+    output$dl_baixar <- shiny::downloadHandler(
+      filename = function() {
+        ind <- input$dl_indicador
+        p <- dl_periodo()
+        sufixo <- if (ind == "estrat") "" else paste0("_", format(p[1], "%Y%m%d"), "-", format(p[2], "%Y%m%d"))
+        paste0("dengue_df_", ind, "_", input$dl_unidade, sufixo, ".", input$dl_formato)
+      },
+      content = function(file) {
+        d <- dados()
+        ind <- input$dl_indicador
+        un <- input$dl_unidade
+        p <- dl_periodo()
+        aplicar <- isTRUE(input$dl_aplicar_filtros)
+        f <- if (aplicar) filtros() else filtros_default()
+
+        tab <- tabela_download(d, p, f, ind, un)
+
+        filtros_txt <- gsub("<[^>]+>", "", texto_filtros())
+        info <- data.frame(
+          Campo = c("Indicador", "Unidade territorial", "Período (primeiros sintomas)",
+                    "Filtros", "Dados atualizados até", "Gerado em"),
+          Valor = c(
+            rotulo_indicador_download(ind),
+            if (un == "setor") "Setor censitário" else "Região Administrativa",
+            if (ind == "estrat") "Série histórica completa (não depende do período)" else
+              paste(format(p[1], "%d/%m/%Y"), "a", format(p[2], "%d/%m/%Y")),
+            if (ind == "estrat") "Não se aplica" else if (!aplicar) "Nenhum (filtros do painel não aplicados)" else
+              if (nzchar(filtros_txt)) filtros_txt else "Nenhum",
+            format(d$meta$dt_max_notificacao, "%d/%m/%Y"),
+            format(Sys.time(), "%d/%m/%Y %H:%M")
+          )
+        )
+
+        escrever_download(tab, info, file, input$dl_formato)
+        shiny::removeModal()
+      }
+    )
+
     #### Camada: casos ----
 
     pal_evolucao <- leaflet::colorFactor(unname(EVOLUCAO_CORES), domain = names(EVOLUCAO_CORES))
@@ -1551,8 +1669,8 @@ mod_municipio_server <- function(id, chosen_municipio, cache_trigger = shiny::re
         leaflet::clearPopups() |>
         leaflet::removeControl("legenda_casos")
 
-      # Todos os casos do filtro, sem amostra: agrupados em clusters que se
-      # abrem ao aproximar o zoom, desenhados por inst/app/www/casos_layer.js.
+      # Todos os casos do filtro, sem amostra: um marcador por RA na vista
+      # inicial e casos individuais a partir do 1o zoom, desenhados por inst/app/www/casos_layer.js.
       # Popups vem do servidor no clique (input$main_map_marker_click).
       session$sendCustomMessage(
         "pvdengue-casos",

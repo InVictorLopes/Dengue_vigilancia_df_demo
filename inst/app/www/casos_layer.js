@@ -14,7 +14,7 @@
 (function () {
   "use strict";
 
-  var ZOOM_INDIVIDUAL = 13; // a partir desse zoom mostra os casos individuais
+  var ZOOM_INDIVIDUAL = 11; // a partir desse zoom (1o zoom depois da vista inicial, 10) mostra os casos individuais
 
   function b64ParaBuffer(s) {
     var bin = atob(s), n = bin.length, u = new Uint8Array(n);

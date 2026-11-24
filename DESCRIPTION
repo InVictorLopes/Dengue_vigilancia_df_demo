@@ -31,7 +31,8 @@ Imports:
     shinyjs,
     shinyWidgets,
     tibble,
-    shinytoastr
+    shinytoastr,
+    openxlsx
 Encoding: UTF-8
 LazyData: true
 Suggests:
